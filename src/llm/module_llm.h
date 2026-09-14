@@ -1,18 +1,13 @@
 /**
  * @file module_llm.h
- * @brief M5Stack Module LLM (StackFlow protocol) UART wrapper.
+ * @brief M5Stack Module LLM (StackFlow protocol) UART wrapper — YOLO物体検出用。
  *
- * 2026-09-09: ユーザーの実機動作実績コード
- * (c:\Users\takes\OneDrive\Documents\Arduino\sketch_sep7a\sketch_sep7a.ino =
- *  reference/vlm_touch_example.cpp) の呼び出し順序・APIに忠実に合わせて全面書き直し。
+ * 2026-09-14: リファレンス実装(reference/yolo_example.ino、ライブラリ同梱 YOLO_CoreS3.ino)を
+ *   ベースにYOLO物体検出専用へ整理。以前併存していたVLM(vlm.setup/inference)系のラッパーは
+ *   現行の構成では使わないため撤去した(必要になれば git 履歴 / reference/vlm_touch_example.cpp を参照)。
  *
- * 以前の実装は`ModuleMsg::takeMsg`を自前でポーリングしてストリーミング応答を組み立てて
- * いたが、実機で「画像送信直後にテキスト推論を送るとjson format errorになる」
- * 「応答メッセージの断片がresponseMsgListに残留し続ける」といった不具合が見つかった。
- * これらは全て、ライブラリが元々提供している `ApiVlm::inferenceAndWaitResult()` を
- * そのまま使えば発生しない(sketch_sep7a.inoが実機で動作した実績があるため)。
- * よって本ラッパーはStackFlowの詳細に立ち入らず、`M5ModuleLLM`ライブラリの
- * 呼び出しを薄くラップするだけに留める。
+ * 本ラッパーはStackFlowの詳細に立ち入らず、`M5ModuleLLM`ライブラリの呼び出しを薄くラップする。
+ * カメラ画像のJPEGをフレーム毎にYOLOへ送り、検出結果(class/confidence/bbox)を受け取る。
  */
 #pragma once
 
@@ -22,34 +17,40 @@
 
 namespace vlmapp {
 
-// sketch_sep7a.ino で実機確認済みの既定値。
-// kDefaultSetupPrompt はひとまず英語回答のため空文字にしている
-// (日本語指定は文字コード/フォント周りの切り分けが済んでから再検討する)。
-extern const char* const kDefaultModel;        // "llm-model-internvl2.5-1b-364-ax630c"
-extern const char* const kDefaultSetupPrompt;  // ""
+// YOLO物体検出の既定モデル。リファレンス(yolo_example.ino)/ YOLO_CoreS3.ino が
+// yolo.setup() を引数なしで呼ぶときの既定 "yolo11n" に合わせる。
+extern const char* const kDefaultYoloModel;    // "yolo11n"
 
-// VLMの英語出力を日本語に訳し直すための翻訳用LLM(qwen)。
-// int4量子化版はVLM(internvl2.5-1B)と同時にロードしてもメモリに収まりやすいことを
-// 期待してこちらを既定にしている。他候補: "llm-model-qwen2.5-1.5b-ax630c",
-// "llm-model-qwen2.5-1.5b-p256-ax630c"。
-extern const char* const kDefaultTranslatorModel;  // "llm-model-qwen2.5-1.5b-int4-ax630c"
+// YOLOの高スループット通信用ボーレート。リファレンスに合わせて 1.5Mbps。
+// フレーム毎にJPEGをUART送信するため、既定の115200bpsでは表示レートが不足する。
+extern const uint32_t kYoloBaudRate;           // 1500000
+
+// YOLOが返す検出結果1件。座標はYOLOへ渡した画像(=カメラフレーム)のピクセル空間。
+// bboxは [x1,y1,x2,y2] の対角コーナー座標として解釈する(リファレンスのフィールド名準拠。
+// 実機で枠がずれる場合は [x,y,w,h] の可能性があるので docs/open_questions.md 参照)。
+struct YoloDetection {
+    String class_name;
+    float confidence = 0.0f;
+    int x1 = 0;
+    int y1 = 0;
+    int x2 = 0;
+    int y2 = 0;
+};
 
 /**
- * @brief M5Stack Module LLM (StackFlow) との通信をラップするクライアント。
+ * @brief M5Stack Module LLM (StackFlow) との通信をラップするYOLOクライアント。
  * `src/hal/` には依存しない(JPEGバイト列は呼び出し元が渡す)。
  *
- * 呼び出し順序(sketch_sep7a.inoのsetup()と同じ):
+ * 呼び出し順序(reference/yolo_example.ino の setup() と同じ):
  *   ModuleLlmClient client;
  *   client.begin(Serial2);
- *   client.waitForConnection();      // 接続できるまでブロック
+ *   client.connectAutoBaud();          // 接続できるまでブロック(接続後は115200へ戻す)
  *   client.resetModule();
- *   client.setupVlm(vlmapp::kDefaultModel, vlmapp::kDefaultSetupPrompt);
+ *   client.setBaudRate(vlmapp::kYoloBaudRate);
+ *   client.setupYolo();
  *
- * 呼び出し順序(loop()と同じ、撮影→推論):
- *   client.pushImage(jpeg, jpeg_len);
- *   delay(10);
- *   client.inferenceAndWaitResult("Describe the content of the image",
- *                                  [](const String& chunk) { ... });
+ * 呼び出し順序(loop()、撮影→推論):
+ *   client.detectObjects(jpeg, jpeg_len, [](const YoloDetection& d) { ... });
  */
 class ModuleLlmClient {
 public:
@@ -58,80 +59,73 @@ public:
 
     /**
      * @brief UART(Serial2)を初期化し、Module LLMへ接続する。
-     * ピンは M5.getPin(port_c_rxd/txd) で自動解決する(sketch_sep7a.ino準拠)。
+     * ピンは M5.getPin(port_c_rxd/txd) で自動解決する(リファレンス準拠)。
      * M5.begin()より後に呼ぶこと。
      */
     bool begin(HardwareSerial& serial, uint32_t baud_rate = 115200);
 
     /**
-     * @brief 接続できるまでブロックする(sketch_sep7a.inoの `while(1) if(checkConnection())
-     * break;` と同じ、タイムアウトなし)。呼び出し前にステータス表示するのは呼び出し側の役目。
+     * @brief 接続できるまでブロックする(リファレンスの `while(1) if(checkConnection()) break;`
+     * と同じ、タイムアウトなし)。呼び出し前にステータス表示するのは呼び出し側の役目。
      */
     void waitForConnection();
 
-    /// Module LLMをリセットする(戻り値は確認しない。sketch_sep7a.ino準拠)。
+    /**
+     * @brief ボーレートを自動検出して接続する(115200 ↔ kYoloBaudRate を交互に試す)。
+     *
+     * 背景: `setBaudRate()` で上げたボーレートはモジュール側の電源を切るまで保持されるため、
+     * CoreS3だけ再起動すると「モジュール=1.5Mbps / CoreS3=115200」で永久に接続できなくなる
+     * (`checkConnection()`は1回2秒待つため、止まって見える)。本メソッドは各候補ボーレートで
+     * pingを試し、接続できたら**必ず115200へ戻して**から返る。以降は
+     * `resetModule()` → `setBaudRate(kYoloBaudRate)` → `setupYolo()` の順序を前提とする。
+     * 接続できるまでブロックする(タイムアウトなし)。
+     */
+    void connectAutoBaud();
+
+    /// Module LLMをリセットする(戻り値は確認しない。リファレンス準拠)。
     void resetModule();
 
     /**
-     * @brief `vlm.setup` を呼び、work_idを保持する。
+     * @brief モジュール側とホスト側(UART)双方のボーレートを変更する。
+     * リファレンスと同じ手順: `sys` 経由でモジュールへ新ボーレートを通知し、
+     * こちら側のSerialも同じボーレートで開き直す。begin() の後に呼ぶこと。
+     * @return モジュール側の設定成功でtrue。
+     */
+    bool setBaudRate(uint32_t baud_rate);
+
+    /**
+     * @brief `yolo.setup` を呼び、YOLOのwork_idを保持する。
      * @return 成功時true(work_idが空でない)。
      */
-    bool setupVlm(const String& model, const String& prompt);
+    bool setupYolo(const String& model = kDefaultYoloModel);
+
+    /// setupYolo()が成功しているか。
+    bool isYoloReady() const { return yolo_work_id_.length() > 0 && yolo_work_id_ != "yolo"; }
+
+    const String& yoloWorkId() const { return yolo_work_id_; }
 
     /**
-     * @brief VLMセッションを終了しリソースを解放する。実機で、VLMとqwen(翻訳用)を
-     * 同時にロードしようとすると翻訳側のsetupが常に失敗する(work_idが汎用の"llm"の
-     * まま)ことを確認したため、翻訳する間はVLMを一旦exitしてメモリを空ける
-     * 運用にしている(2026-09-09)。
-     */
-    void exitVlm();
-
-    /// setupVlm()が成功しているか(汎用のフォールバック値"vlm"は不成功として扱う)。
-    bool isReady() const { return work_id_.length() > 0 && work_id_ != "vlm"; }
-
-    const String& workId() const { return work_id_; }
-
-    /**
-     * @brief JPEG画像フレームをModule LLMへ送る(fire-and-forget、応答を待たない)。
-     */
-    void pushImage(const uint8_t* jpeg_data, size_t jpeg_len);
-
-    /**
-     * @brief テキストプロンプトを送り、応答が完了するまでブロックして待つ。
-     * ライブラリの `ApiVlm::inferenceAndWaitResult()` をそのまま使うため、応答は
-     * チャンク(delta)ごとに `onChunk` が呼ばれる(finish時にも1回呼ばれ、末尾に改行が付く)。
+     * @brief JPEG画像1枚をYOLOで推論し、検出ごとに onDetection を呼ぶ(同期・ブロッキング)。
+     * ライブラリの `ApiYolo::inferenceAndWaitResult()` を使い、返ってくる検出JSON
+     * ({"class","confidence","bbox":[x1,y1,x2,y2]})を YoloDetection にパースする。
+     * finish時の空チャンクや不正JSONは onDetection を呼ばずにスキップする。
      *
-     * @param timeout_ms 応答が途切れてからのタイムアウト(ライブラリ既定は5000ms)。
-     * @return true=正常完了、false=タイムアウト。
+     * @param timeout_ms 応答が途切れてからのタイムアウト。検出0件でモジュールがfinishを
+     *        返さない場合の空振り時間になるため、ライブフレームレートに影響する(要実機調整)。
+     * @return true=正常完了、false=未setup/タイムアウト。
      */
-    bool inferenceAndWaitResult(const String& prompt, const std::function<void(const String&)>& onChunk,
-                                uint32_t timeout_ms = 15000);
-
-    /**
-     * @brief 翻訳用LLM(qwen)を`llm.setup`でセットアップする。VLMのsetupVlm()同様、
-     * work_idが汎用の"llm"のまま返ってくる場合はリトライする。
-     */
-    bool setupTranslator(const String& model = kDefaultTranslatorModel, const String& systemPrompt = "");
-
-    /// setupTranslator()が成功しているか(汎用のフォールバック値"llm"は不成功として扱う)。
-    bool isTranslatorReady() const { return translator_work_id_.length() > 0 && translator_work_id_ != "llm"; }
-
-    /**
-     * @brief 翻訳用LLM(qwen)セッションを終了しリソースを解放する。
-     */
-    void exitTranslator();
-
-    /**
-     * @brief 与えた英文を日本語へ翻訳するようqwenへ依頼し、ストリーミングで結果を受け取る。
-     * @return true=正常完了、false=タイムアウトまたは翻訳LLM未セットアップ。
-     */
-    bool translateToJapanese(const String& englishText, const std::function<void(const String&)>& onChunk,
-                             uint32_t timeout_ms = 30000);
+    bool detectObjects(const uint8_t* jpeg_data, size_t jpeg_len,
+                       const std::function<void(const YoloDetection&)>& onDetection,
+                       uint32_t timeout_ms = 500);
 
 private:
     M5ModuleLLM module_;
-    String work_id_;
-    String translator_work_id_;
+    String yolo_work_id_;
+    // setBaudRate()/connectAutoBaud() でSerialを開き直すために begin() で受け取ったSerialを保持する。
+    HardwareSerial* serial_ = nullptr;
+
+    // serial_ を指定ボーレートで開き直し、module_.begin() し直す(RXD/TXDは毎回M5.getPin()で解決)。
+    void reopenSerial(uint32_t baud_rate);
 };
 
 }  // namespace vlmapp

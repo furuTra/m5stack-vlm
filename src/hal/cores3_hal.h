@@ -65,6 +65,23 @@ void releaseJpeg(uint8_t* jpg);
 // 現在取得中のカメラフレーム(生RGB565)を画面全体にそのまま表示する(ライブプレビュー)。
 void showCameraFramePreview();
 
+// 検出結果を重ねて描画するための矩形1件。座標はカメラフレームのピクセル空間
+// ([x1,y1]-[x2,y2] の対角コーナー)。表示解像度への拡縮はHAL側で行う。
+// label は矩形の左上に添える文字列(nullptr可)。呼び出し中だけ有効なポインタでよい。
+struct OverlayBox {
+    int x1;
+    int y1;
+    int x2;
+    int y2;
+    const char* label;
+    uint16_t color;
+};
+
+// 現在取得中のカメラフレームを画面全体に表示し、その上に検出矩形(boxes)を重ねて描画する。
+// ちらつきを避けるためオフスクリーンcanvasへ合成してから一括転送する。
+// cameraFrameToJpeg() 等と同様、対になる cameraFrameRelease() を呼ぶ前に使うこと。
+void showCameraFrameWithOverlay(const OverlayBox* boxes, size_t count);
+
 // --- LCD ---
 
 // 画面全体を消去する。

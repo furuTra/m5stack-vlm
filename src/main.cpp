@@ -3,16 +3,17 @@
  *
  * アプリケーション層(vlm-app担当)。
  *
- * 2026-09-09: ユーザーの実機動作実績コード
- * (c:\Users\takes\OneDrive\Documents\Arduino\sketch_sep7a\sketch_sep7a.ino =
- *  reference/vlm_touch_example.cpp) のsetup()/loop()のロジックに忠実に合わせて全面書き直し。
- * 独自のステートマシン(BOOT_ERRORリトライ、ストリーミング蓄積表示等)は一旦廃止し、
- * 「動作実績のある挙動をそのまま再現する」ことを最優先にしている。
- *
- * 操作方法(sketch_sep7a.ino準拠): 画面をダブルタップ(800ms以内に2回クリック)すると撮影→
- * VLM推論を実行する。それ以外はライブカメラプレビューを表示し続ける。
+ * 2026-09-14: リファレンス実装(reference/yolo_example.ino、およびライブラリ同梱の
+ *   YOLO_CoreS3.ino)をベースに、YOLO物体検知のみを行う構成へ全面書き直し。
+ *   - 以前の VLM / WiFi / 外部AIサーバー送信 / 対象クラス絞り込み(SUBJECT出力)は撤去。
+ *   - 毎フレーム、カメラ画像をYOLOで推論し、検出した被写体すべてをバウンディングボックス
+ *     +「クラス名 信頼度」ラベルでライブ映像に重ねて表示する(リファレンスと同じ挙動)。
+ *   起動シーケンス(接続→reset→ボーレート1.5M→yolo.setup)はリファレンスに忠実に合わせ、
+ *   YOLOモデルはライブラリ既定 "yolo11n"(kDefaultYoloModel)を使う。
  */
 #include <Arduino.h>
+
+#include <vector>
 
 #include "hal/cores3_hal.h"
 #include "llm/module_llm.h"
@@ -21,10 +22,15 @@ namespace {
 
 vlmapp::ModuleLlmClient g_llm_client;
 
-const char* const kQuestion = "Describe the content of the image";
+// これ未満の確信度の検出は枠表示から除外する(誤検出抑制、要実機調整)。
+const float kMinConfidence = 0.30f;
 
-// 0=プレビュー中, 1=撮影直後の1フレーム待ち, 2=撮影・推論を実行する
-int g_vlm_inference = 0;
+// 検出枠・ラベルの色(RGB565)。リファレンスは ORANGE 単色で描いている。
+const uint16_t kBoxColor = 0xFD20;  // オレンジ
+
+// YOLO推論の応答タイムアウト。リファレンス(yolo_example.ino)のloop()と同じく短く取り、
+// ライブフレームレートを優先する。応答が途切れてからこの時間で打ち切る。
+const uint32_t kInferenceTimeoutMs = 10;
 
 }  // namespace
 
@@ -33,95 +39,61 @@ void setup() {
 
     cores3_hal::printLine(">> Check ModuleLLM connection..\n");
     g_llm_client.begin(Serial2);
-    g_llm_client.waitForConnection();
+    // ボーレート自動検出で接続する。CoreS3だけ再起動してモジュールが前回の1.5Mbpsのまま
+    // 残っていても、115200と交互に試して復帰する(接続後は必ず115200へ戻る)。
+    g_llm_client.connectAutoBaud();
 
     cores3_hal::printLine(">> Reset ModuleLLM..\n");
     g_llm_client.resetModule();
 
-    cores3_hal::printLine(">> Setup vlm..\n");
-    bool ok = g_llm_client.setupVlm(vlmapp::kDefaultModel, vlmapp::kDefaultSetupPrompt);
-    if (!ok) {
-        cores3_hal::printError(">> VLM setup failed\n");
+    // リファレンス準拠: フレーム毎のJPEG送信に耐えるようボーレートを上げる。
+    cores3_hal::printLine(">> Set baud rate..\n");
+    g_llm_client.setBaudRate(vlmapp::kYoloBaudRate);
+
+    cores3_hal::printLine(">> Setup yolo..\n");
+    if (!g_llm_client.setupYolo(vlmapp::kDefaultYoloModel)) {
+        cores3_hal::printError(">> YOLO setup failed\n");
     }
-    // 翻訳用qwenは常駐させない: 実機で、VLMとqwenを同時にロードすると
-    // qwen側のsetupが常に失敗する(メモリ/リソース不足と思われる)ことを確認したため、
-    // 翻訳が必要になったタイミングでVLMをexitしてから都度setupする(2026-09-09)。
 }
 
 void loop() {
     cores3_hal::update();
 
-    if (cores3_hal::touchWasClicked()) {
-        static unsigned long lastClickTime = 0;
-        unsigned long currentMillis        = millis();
-        if (currentMillis - lastClickTime < 800) {
-            g_vlm_inference = 2;
-        }
-        lastClickTime = currentMillis;
+    if (!cores3_hal::cameraFrameAvailable()) {
+        return;
     }
 
-    if (cores3_hal::touchWasFlicked()) {
-        g_vlm_inference--;
-    }
+    uint8_t* jpg   = nullptr;
+    size_t jpg_len = 0;
+    cores3_hal::cameraFrameToJpeg(&jpg, &jpg_len);
 
-    if (cores3_hal::cameraFrameAvailable()) {
-        if (g_vlm_inference == 2) {
-            uint8_t* jpg   = nullptr;
-            size_t jpg_len = 0;
-            cores3_hal::cameraFrameToJpeg(&jpg, &jpg_len);
-            g_llm_client.pushImage(jpg, jpg_len);
-            cores3_hal::releaseJpeg(jpg);
-
-            // sketch_sep7a.ino(元コード)は delay(10) だが、実機検証で画像サイズによっては
-            // 不足し、モジュール側が次のコマンドを"json format error"として処理してしまう
-            // ケースを確認したため、余裕を持たせて delay(50) にしている(2026-09-09)。
-            delay(50);
-            cores3_hal::setResultCursorTopLeft();
-            cores3_hal::printLine("Analyzing...\n");
-
-            // VLMの出力(英語)はいったん貯めてから翻訳にかける
-            // (逐次画面に出さない。翻訳後の日本語だけを表示する)。
-            String englishDescription;
-            g_llm_client.inferenceAndWaitResult(
-                kQuestion, [&englishDescription](const String& result) { englishDescription += result; });
-
-            // VLMとqwen(翻訳)は同時にロードできないため、VLMを一旦exitしてから
-            // qwenをsetupする。
-            g_llm_client.exitVlm();
-
-            cores3_hal::clearDisplay();
-            cores3_hal::setResultCursorTopLeft();
-            cores3_hal::printLine("Translating...\n");
-
-            bool translatorOk = g_llm_client.setupTranslator();
-            cores3_hal::clearDisplay();
-            cores3_hal::setResultCursorTopLeft();
-
-            if (translatorOk) {
-                cores3_hal::useJapaneseFont();
-                bool translated = g_llm_client.translateToJapanese(
-                    englishDescription, [](const String& chunk) { cores3_hal::printResultChunk(chunk); });
-                cores3_hal::useDefaultFont();
-                if (!translated) {
-                    cores3_hal::printError("\n[translation timed out]\n");
-                }
-                g_llm_client.exitTranslator();
-            } else {
-                // 翻訳セットアップに失敗した場合は英語のまま表示する。
-                cores3_hal::printError("[translator setup failed]\n");
-                cores3_hal::printResultChunk(englishDescription);
+    // このフレームの検出結果を集める。ラベル文字列(labels)は showCameraFrameWithOverlay() へ
+    // 渡す OverlayBox.label が指す実体になるので、ポインタを取る前に確定させる必要がある。
+    std::vector<vlmapp::YoloDetection> dets;
+    g_llm_client.detectObjects(
+        jpg, jpg_len,
+        [&dets](const vlmapp::YoloDetection& d) {
+            if (d.confidence >= kMinConfidence) {
+                dets.push_back(d);
             }
+        },
+        kInferenceTimeoutMs);
 
-            // 次の撮影に備えてVLMを再度セットアップしておく。
-            cores3_hal::printLine("\n\n(preparing next shot...)\n");
-            g_llm_client.setupVlm(vlmapp::kDefaultModel, vlmapp::kDefaultSetupPrompt);
-
-            g_vlm_inference--;
-        } else if (g_vlm_inference == 1) {
-            delay(10);
-        } else {
-            cores3_hal::showCameraFramePreview();
-        }
-        cores3_hal::cameraFrameRelease();
+    // ラベル文字列を先に確定させてから、それを指すオーバーレイ枠を作る。
+    std::vector<String> labels;
+    labels.reserve(dets.size());
+    for (const auto& d : dets) {
+        labels.push_back(d.class_name + " " + String(d.confidence, 2));
     }
+
+    std::vector<cores3_hal::OverlayBox> boxes;
+    boxes.reserve(dets.size());
+    for (size_t i = 0; i < dets.size(); ++i) {
+        boxes.push_back({dets[i].x1, dets[i].y1, dets[i].x2, dets[i].y2, labels[i].c_str(), kBoxColor});
+    }
+
+    cores3_hal::showCameraFrameWithOverlay(boxes.data(), boxes.size());
+
+    cores3_hal::releaseJpeg(jpg);
+    cores3_hal::cameraFrameRelease();
 }
