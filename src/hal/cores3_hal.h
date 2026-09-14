@@ -56,7 +56,9 @@ void cameraFrameRelease();
 
 // 現在取得中のカメラフレームをJPEGへ圧縮する(frame2jpg準拠)。
 // out_jpg/out_len: 成功時にJPEGバッファの先頭ポインタとサイズを書き込む。
-// quality: JPEG圧縮品質(0-255、値が小さいほど高画質・低圧縮率)。既定50はsketch_sep7a.inoに合わせている。
+// quality: JPEG圧縮品質(frame2jpg準拠、概ね0-100)。値が大きいほど高画質だがサイズが大きくなり、
+//          小さいほど低画質だがサイズが小さくUART転送が速い。既定50はフォールバックで、
+//          カクつき対策として呼び出し側(main.cpp)が明示的に値を渡す想定。
 bool cameraFrameToJpeg(uint8_t** out_jpg, size_t* out_len, uint8_t quality = 50);
 
 // cameraFrameToJpeg() で取得したJPEGバッファを解放する。

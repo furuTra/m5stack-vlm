@@ -32,6 +32,10 @@ const uint16_t kBoxColor = 0xFD20;  // オレンジ
 // ライブフレームレートを優先する。応答が途切れてからこの時間で打ち切る。
 const uint32_t kInferenceTimeoutMs = 10;
 
+// YOLOへUART送信するJPEGの圧縮品質(0-100)。値を下げるほどJPEGが小さくなりUART転送が
+// 速い(カクつき対策)。実機で画質と速度のバランスを見て調整する。
+constexpr uint8_t kJpegQuality = 30;
+
 }  // namespace
 
 void setup() {
@@ -65,7 +69,7 @@ void loop() {
 
     uint8_t* jpg   = nullptr;
     size_t jpg_len = 0;
-    cores3_hal::cameraFrameToJpeg(&jpg, &jpg_len);
+    cores3_hal::cameraFrameToJpeg(&jpg, &jpg_len, kJpegQuality);
 
     // このフレームの検出結果を集める。ラベル文字列(labels)は showCameraFrameWithOverlay() へ
     // 渡す OverlayBox.label が指す実体になるので、ポインタを取る前に確定させる必要がある。
