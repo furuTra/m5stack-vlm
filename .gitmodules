@@ -1,0 +1,3 @@
+[submodule "lib/yolo_object_detector"]
+	path = lib/yolo_object_detector
+	url = https://github.com/furuTra/yolo_object_detector.git
