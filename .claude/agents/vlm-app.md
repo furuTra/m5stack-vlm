@@ -13,7 +13,7 @@ LCD表示は「カメラのライブ映像+検出したすべての被写体の�
 - `src/main.cpp`の`setup()`/`loop()`: 起動シーケンス(`cores3_hal::begin()` → `g_llm_client.begin()` →
   `connectAutoBaud()` → `resetModule()` → `setBaudRate()` → `setupYolo()`)と、毎フレームの
   撮影→検出→オーバーレイ表示→バッファ解放ループ
-- [[cores3-hal]]が提供するカメラ/LCD APIと[[module-llm-protocol]]が提供するYOLO API(`detectObjects()`)を組み合わせる
+- [[cores3-hal]]が提供するカメラ/LCD APIと[[module-llm-protocol]]が提供するYOLO API(`yolo_object_detector::Detector::detect()`)を組み合わせる
 - 検出結果のフィルタリング(`kMinConfidence`等の閾値)、タイムアウト・エラー時の挙動
 - ボタン/タッチ操作を今後追加する場合のトリガー処理
 

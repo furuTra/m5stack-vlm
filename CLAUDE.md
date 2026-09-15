@@ -11,11 +11,13 @@ M5Stack CoreS3 + M5Stack Module LLM(旧称 LLM Module、LLM630 Compute Kit相当
 ## ドキュメント索引
 - [docs/hardware.md](docs/hardware.md) — ハードウェア構成、依存ライブラリ、参考リンク
 - [docs/protocol.md](docs/protocol.md) — 通信プロトコル(StackFlow)、実績のあるAPI呼び出し順序
-- [docs/module_llm_api.md](docs/module_llm_api.md) — `src/llm/module_llm.h`が提供するラッパーAPI
+- [docs/module_llm_api.md](docs/module_llm_api.md) — `lib/yolo_object_detector/`が提供するラッパーAPI
 - [docs/known_issues.md](docs/known_issues.md) — 既知の不具合(修正済み)
 - [docs/open_questions.md](docs/open_questions.md) — 未確定事項・実機で要検証の項目
 - [docs/architecture.md](docs/architecture.md) — コード構成、エージェントの担当範囲、`src/main.cpp`のステートマシン
 - [docs/yolo_example_loop.md](docs/yolo_example_loop.md) — `reference/yolo_example.ino`の`loop()`処理のmermaid図解
+- [docs/portable_yolo_package_plan.md](docs/portable_yolo_package_plan.md) — YOLO物体座標検出を外部移植可能な
+  パッケージ(`lib/yolo_object_detector/`)として切り出す計画。着手前に必ず読むこと
 
 ## 実機確認済みリファレンス
 `reference/yolo_example.ino` — YOLO物体検知の一次情報。カメラ初期化・UARTピン取得・ボーレート切替・

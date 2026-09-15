@@ -3,7 +3,7 @@
 | ディレクトリ/ファイル | 担当エージェント | 内容 |
 |---|---|---|
 | `src/hal/` | `cores3-hal` | カメラ・LCD・ボタン等CoreS3周辺機器の抽象化 |
-| `src/llm/` | `module-llm-protocol` | Module LLMとのUART/StackFlow通信ラッパー(YOLO用) |
+| `lib/yolo_object_detector/` | `module-llm-protocol` | Module LLMとのUART/StackFlow通信ラッパー(YOLO用)。JPEG IN→座標 OUTの外部移植可能パッケージ |
 | `src/main.cpp` | `vlm-app` | 全体のループ・UIフロー |
 | (プロジェクト全体) | `pio-build-check` | `pio run` によるビルド検証専任(実装はしない) |
 | (プロジェクト全体) | `cpp-code-review` | 命名規則・メモリ所有権・ポインタ寿命等のコード品質レビュー専任(実装はしない) |
@@ -12,14 +12,14 @@
 
 ## src/main.cpp 実装済み(vlm-app担当)
 
-`cores3_hal`・`vlmapp::ModuleLlmClient`を組み合わせたループを実装済み。各モジュールの中身には
-手を入れず、公開APIのみ呼び出している。制御フローはリファレンス実装(`reference/yolo_example.ino`、
+`cores3_hal`・`yolo_object_detector::Detector`(`lib/yolo_object_detector/`パッケージ)を組み合わせたループを
+実装済み。各モジュールの中身には手を入れず、公開APIのみ呼び出している。制御フローはリファレンス実装(`reference/yolo_example.ino`、
 ライブラリ同梱の `YOLO_CoreS3.ino`)に忠実なオンデバイスYOLO物体検出で、カメラ映像の上に検出した
 被写体すべてをバウンディングボックス+「クラス名 信頼度」ラベルで重ねてライブ表示する。
 
 撮影・検出シーケンス(`loop()`内、毎フレーム):
 1. `cameraFrameToJpeg()`でJPEG取得
-2. `g_llm_client.detectObjects(jpg, len, onDetection, kInferenceTimeoutMs)`で検出結果(`YoloDetection`:
+2. `g_llm_client.detect(jpg, len, onDetection, kInferenceTimeoutMs)`で検出結果(`DetectedObject`:
    class/confidence/bbox)を集める。`kMinConfidence`(既定0.30)未満は除外する。タイムアウトは
    リファレンスのloop()に合わせて`kInferenceTimeoutMs`(既定10ms)
 3. 検出を`cores3_hal::OverlayBox`へ変換し、`showCameraFrameWithOverlay()`でカメラ映像+枠+ラベルを
@@ -32,12 +32,16 @@ LCD表示は「ライブ映像+検出枠」のみで、WiFi・外部サーバー
 起動シーケンス(`setup()`)の順序: `cores3_hal::begin()` → `g_llm_client.begin(Serial2)` →
 `connectAutoBaud()`(接続後は必ず115200へ戻す) → `resetModule()` → `setBaudRate(kYoloBaudRate)`
 (1.5Mbps、フレーム毎JPEG送信のスループット確保) → `setupYolo()`(既定モデル`yolo11n`)。
-`ModuleLlmClient::begin()`は`cores3_hal::begin()`(内部で`M5.begin()`を呼ぶ)より後に呼ぶ順序を
+`Detector::begin()`は`cores3_hal::begin()`(内部で`M5.begin()`を呼ぶ)より後に呼ぶ順序を
 厳守している(`M5.getPin()`でUARTピンを解決するため)。
 
 `pio run -e m5stack-cores3` でビルド成功済み(2026-09-14時点)。
 
 ## 変更履歴
+- 2026-09-15: YOLO検出処理(`src/llm/module_llm.h/.cpp`、`vlmapp::ModuleLlmClient`)を外部移植可能な
+  PlatformIOローカルライブラリ`lib/yolo_object_detector/`(`yolo_object_detector::Detector` /
+  `DetectedObject` / `detect()`)として切り出した。`src/main.cpp`はincludeと型名の差し替えのみで追従。
+  詳細は[portable_yolo_package_plan.md](portable_yolo_package_plan.md)。
 - 2026-09-12: オンデバイスのqwen翻訳を廃止し、VLMによる被写体有無判定+外部AIサーバーへの画像送信という
   構成を試みた(後に撤回)。
 - 2026-09-12(2)〜2026-09-13: オンデバイスの主機能をVLMからYOLO物体検出へ移行。YOLOモデル指定・
@@ -52,6 +56,6 @@ LCD表示は「ライブ映像+検出枠」のみで、WiFi・外部サーバー
 ## 関連ドキュメント
 - 実機確認済みリファレンス: `reference/yolo_example.ino`(カメラ初期化・UARTピン取得・YOLO API呼び出し順序の
   一次情報。迷ったら推測せずこのファイルを読むこと)
-- `src/llm/module_llm.h`の公開API: [module_llm_api.md](module_llm_api.md)
+- YOLO検出パッケージの公開API: [module_llm_api.md](module_llm_api.md)(実体は `lib/yolo_object_detector/README.md`)
 - 既知の不具合: [known_issues.md](known_issues.md)
 - 未確定事項・実機で要検証: [open_questions.md](open_questions.md)

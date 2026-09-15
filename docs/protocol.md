@@ -31,8 +31,8 @@ module_llm.yolo.inferenceAndWaitResult(
 ```
 
 内部的にはStackFlowのNDJSON(`yolo.setup`/`yolo.inference`等)がやり取りされているが、実装上は上記C++ APIを使えば十分。
-`src/llm/module_llm.h`の`ModuleLlmClient`がこの順序を薄くラップしている(接続はボーレート自動検出付きの
-`connectAutoBaud()`を使う)。
+`lib/yolo_object_detector/`パッケージの`yolo_object_detector::Detector`がこの順序を薄くラップしている
+(接続はボーレート自動検出付きの`connectAutoBaud()`を使う)。
 
 ## 生プロトコルの詳細(参考)
 `yolo.setup`が送るコマンドの例(ライブラリ`ApiYolo::setup`が組み立てる):
@@ -46,6 +46,6 @@ module_llm.yolo.inferenceAndWaitResult(
 
 ## 関連ドキュメント
 - ハードウェア構成: [hardware.md](hardware.md)
-- `src/llm/module_llm.h`の薄いラッパーAPI: [module_llm_api.md](module_llm_api.md)
+- `lib/yolo_object_detector/`の薄いラッパーAPI: [module_llm_api.md](module_llm_api.md)
 - 既知の不具合(修正済み): [known_issues.md](known_issues.md)
 - 実機で要検証の項目: [open_questions.md](open_questions.md)

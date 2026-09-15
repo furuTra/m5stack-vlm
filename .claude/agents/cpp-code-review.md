@@ -11,11 +11,11 @@ tools: Read, Grep, Glob, Bash
 ## チェック項目
 
 1. **命名規則**(既存コードから読み取れる慣習との一致)
-   - 名前空間はsnake_case(`cores3_hal`, `vlmapp`)
-   - 関数/メソッドはlowerCamelCase(`cameraFrameAvailable`, `setupYolo`, `detectObjects`)
+   - 名前空間はsnake_case(`cores3_hal`, `yolo_object_detector`)
+   - 関数/メソッドはlowerCamelCase(`cameraFrameAvailable`, `setupYolo`, `detect`)
    - 定数は`k`+camelCase、`extern const`でヘッダ宣言・.cppで定義(`kDefaultYoloModel`, `kMinConfidence`)
    - privateメンバ変数は末尾アンダースコア(`module_`, `yolo_work_id_`, `serial_`)
-   - 単純なPOD構造体のフィールドはsnake_case(`YoloDetection::class_name`, `OverlayBox::x1`)
+   - 単純なPOD構造体のフィールドはsnake_case(`DetectedObject::class_name`, `OverlayBox::x1`)
    - これらから外れる新規コードがあれば指摘する
 
 2. **メモリ/リソース所有権**
@@ -29,7 +29,7 @@ tools: Read, Grep, Glob, Bash
    - `OverlayBox.label`のような「借用ポインタ」が指す実体(`std::vector<String>`等)が、使用中に
      再確保・スコープアウトしないか。`main.cpp`の`labels`→`boxes`の順序(文字列を確定させてからポインタを取る)のような
      既存の安全パターンを壊していないか
-   - コールバック(`std::function<void(const YoloDetection&)>`等)がキャプチャする参照/ポインタの生存期間
+   - コールバック(`std::function<void(const DetectedObject&)>`等)がキャプチャする参照/ポインタの生存期間
 
 4. **エラーハンドリング**
    - 例外を使わずbool返り値/空文字列で失敗を表現する既存方針に沿っているか(Arduino環境は例外を前提としない)
